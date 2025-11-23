@@ -25,6 +25,49 @@ app.get('/health', (req, res) => {
     });
 });
 
+// Battery update route
+app.post('/api/battery-update', (req, res) => {
+    try {
+        const { deviceId, deviceName, batteryLevel, timestamp } = req.body;
+        
+        console.log('🔋 Battery update received:', { deviceId, batteryLevel });
+        
+        // Device find karo ya naya banayo
+        let device = connectedDevices.find(d => d.id === deviceId);
+        
+        if (device) {
+            // Update existing device
+            device.batteryLevel = batteryLevel;
+            device.lastConnected = new Date().toLocaleTimeString();
+            device.lastBatteryUpdate = new Date().toLocaleTimeString();
+        } else {
+            // Naya device banayo
+            device = {
+                id: deviceId,
+                deviceName: deviceName || 'Child Device',
+                batteryLevel: batteryLevel,
+                status: 'online',
+                lastConnected: new Date().toLocaleTimeString(),
+                lastBatteryUpdate: new Date().toLocaleTimeString()
+            };
+            connectedDevices.push(device);
+        }
+        
+        res.json({ 
+            success: true,
+            message: 'Battery update received',
+            batteryLevel: batteryLevel
+        });
+        
+    } catch (error) {
+        console.error('❌ Battery update error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
 // Register child device
 app.post('/api/register', (req, res) => {
     try {
