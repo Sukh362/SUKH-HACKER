@@ -25,42 +25,106 @@ app.get('/health', (req, res) => {
     });
 });
 
-// Battery update route
+// ✅ FIXED: Battery update route - SAME DEVICE UPDATE
 app.post('/api/battery-update', (req, res) => {
     try {
-        const { deviceId, deviceName, batteryLevel, timestamp } = req.body;
+        const { deviceId, deviceName, batteryLevel, timestamp, updateReason } = req.body;
         
-        console.log('🔋 Battery update received:', { deviceId, batteryLevel });
+        console.log('🔋 Battery update received:', { deviceId, deviceName, batteryLevel, updateReason });
         
-        // Device find karo ya naya banayo
+        if (!deviceId) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Device ID is required' 
+            });
+        }
+        
+        // ✅ Device find karo, naya mat banayo
         let device = connectedDevices.find(d => d.id === deviceId);
         
         if (device) {
-            // Update existing device
+            // ✅ UPDATE EXISTING DEVICE
             device.batteryLevel = batteryLevel;
+            device.deviceName = deviceName || device.deviceName;
             device.lastConnected = new Date().toLocaleTimeString();
             device.lastBatteryUpdate = new Date().toLocaleTimeString();
+            device.status = 'online';
+            device.updateReason = updateReason || 'AUTO_UPDATE';
+            
+            console.log('✅ Device UPDATED:', device.deviceName, '| Battery:', batteryLevel + '%');
         } else {
-            // Naya device banayo
+            // ✅ ONLY CREATE NEW IF DEVICE REALLY DOESN'T EXIST
             device = {
                 id: deviceId,
                 deviceName: deviceName || 'Child Device',
                 batteryLevel: batteryLevel,
                 status: 'online',
                 lastConnected: new Date().toLocaleTimeString(),
-                lastBatteryUpdate: new Date().toLocaleTimeString()
+                lastBatteryUpdate: new Date().toLocaleTimeString(),
+                connectedAt: new Date().toLocaleTimeString(),
+                updateReason: updateReason || 'FIRST_UPDATE'
             };
             connectedDevices.push(device);
+            
+            console.log('🆕 New Device CREATED:', device.deviceName, '| Battery:', batteryLevel + '%');
         }
         
         res.json({ 
             success: true,
             message: 'Battery update received',
-            batteryLevel: batteryLevel
+            batteryLevel: batteryLevel,
+            deviceId: deviceId
         });
         
     } catch (error) {
         console.error('❌ Battery update error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ FIXED: Register child device - SAME DEVICE ID USE KARO
+app.post('/api/register', (req, res) => {
+    try {
+        const { deviceId, deviceName, batteryLevel } = req.body;
+        
+        console.log('📱 Child registration request:', req.body);
+        
+        if (!deviceId) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Device ID is required' 
+            });
+        }
+        
+        // ✅ CLIENT SE DEVICE ID LO, NAYA MAT BANAO
+        const newDevice = {
+            id: deviceId, // ✅ CLIENT KA DIYA HUA ID USE KARO
+            deviceName: deviceName || 'Child Device',
+            batteryLevel: batteryLevel || 50,
+            status: 'online',
+            lastConnected: new Date().toLocaleTimeString(),
+            connectedAt: new Date().toLocaleTimeString(),
+            ip: req.ip
+        };
+        
+        // ✅ Remove existing device with same ID (avoid duplicates)
+        connectedDevices = connectedDevices.filter(device => device.id !== deviceId);
+        connectedDevices.push(newDevice);
+        
+        console.log('✅ Device REGISTERED:', newDevice.deviceName, '| ID:', deviceId);
+        console.log('📊 Total devices:', connectedDevices.length);
+        
+        res.json({ 
+            success: true,
+            message: 'Device registered successfully',
+            device: newDevice
+        });
+        
+    } catch (error) {
+        console.error('❌ Registration error:', error);
         res.status(500).json({ 
             success: false,
             error: error.message 
@@ -102,7 +166,7 @@ app.delete('/api/delete-device', (req, res) => {
     }
 });
 
-// Clear all devices (existing route - confirm it's DELETE method)
+// Clear all devices
 app.delete('/api/clear', (req, res) => {
     const deviceCount = connectedDevices.length;
     connectedDevices = [];
@@ -114,49 +178,16 @@ app.delete('/api/clear', (req, res) => {
     });
 });
 
-
-// Register child device
-app.post('/api/register', (req, res) => {
-    try {
-        const { deviceName, batteryLevel } = req.body;
-        
-        console.log('📱 Child registration request:', req.body);
-        
-        const newDevice = {
-            id: 'CHILD_' + Date.now(),
-            deviceName: deviceName || 'Child Device',
-            batteryLevel: batteryLevel || Math.floor(Math.random() * 100),
-            status: 'online',
-            lastConnected: new Date().toLocaleTimeString(),
-            ip: req.ip
-        };
-        
-        // Remove existing device with same ID
-        connectedDevices = connectedDevices.filter(device => device.id !== newDevice.id);
-        connectedDevices.push(newDevice);
-        
-        console.log('✅ Device registered:', newDevice.deviceName);
-        console.log('📊 Total devices:', connectedDevices.length);
-        
-        res.json({ 
-            success: true,
-            message: 'Device registered successfully',
-            device: newDevice
-        });
-        
-    } catch (error) {
-        console.error('❌ Registration error:', error);
-        res.status(500).json({ 
-            success: false,
-            error: error.message 
-        });
-    }
-});
-
 // Get all connected devices
 app.get('/api/devices', (req, res) => {
     try {
         console.log('📊 Devices requested. Total:', connectedDevices.length);
+        
+        // ✅ Show current devices in console
+        connectedDevices.forEach(device => {
+            console.log(`   📱 ${device.deviceName} | ID: ${device.id} | Battery: ${device.batteryLevel}%`);
+        });
+        
         res.json({ 
             success: true,
             connectedDevices: connectedDevices 
@@ -169,37 +200,59 @@ app.get('/api/devices', (req, res) => {
     }
 });
 
-// Clear all devices (for testing)
-app.delete('/api/clear', (req, res) => {
-    connectedDevices = [];
-    res.json({ 
-        success: true,
-        message: 'All devices cleared'
-    });
+// ✅ NEW: Clear specific device by ID
+app.delete('/api/clear-device/:deviceId', (req, res) => {
+    try {
+        const { deviceId } = req.params;
+        
+        console.log('🗑️ Clear device request:', deviceId);
+        
+        const initialLength = connectedDevices.length;
+        connectedDevices = connectedDevices.filter(device => device.id !== deviceId);
+        
+        res.json({ 
+            success: true,
+            message: 'Device cleared',
+            cleared: initialLength - connectedDevices.length,
+            remainingDevices: connectedDevices.length
+        });
+        
+    } catch (error) {
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
 });
 
 // Root route
 app.get('/', (req, res) => {
     res.json({
-        message: '🚀 Parental Control Server API',
+        message: '🚀 Parental Control Server API - FIXED VERSION',
         endpoints: {
             health: '/health',
-            register: '/api/register (POST)',
+            register: '/api/register (POST) - REQUIRES deviceId',
+            batteryUpdate: '/api/battery-update (POST) - REQUIRES deviceId',
             devices: '/api/devices (GET)',
-            clear: '/api/clear (DELETE)'
+            clear: '/api/clear (DELETE)',
+            clearDevice: '/api/clear-device/:deviceId (DELETE)'
         },
-        deviceCount: connectedDevices.length
+        deviceCount: connectedDevices.length,
+        note: '✅ Now using same device ID for updates - no duplicate devices!'
     });
 });
 
 // Start server
 app.listen(PORT, () => {
-    console.log('🚀 Parental Control Server Started!');
+    console.log('🚀 Parental Control Server Started! - FIXED VERSION');
     console.log(`📍 Port: ${PORT}`);
     console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log('📋 Available Routes:');
     console.log('   GET  /health');
-    console.log('   POST /api/register');
+    console.log('   POST /api/register ✅ REQUIRES deviceId');
+    console.log('   POST /api/battery-update ✅ REQUIRES deviceId');
     console.log('   GET  /api/devices');
     console.log('   DELETE /api/clear');
+    console.log('   DELETE /api/clear-device/:deviceId');
+    console.log('\n✅ FIX: Same device ID for all updates - No duplicate devices!');
 });
