@@ -68,6 +68,53 @@ app.post('/api/battery-update', (req, res) => {
     }
 });
 
+// Delete specific device
+app.delete('/api/delete-device', (req, res) => {
+    try {
+        const { deviceId } = req.body;
+        
+        console.log('🗑️ Delete request for device:', deviceId);
+        
+        const initialLength = connectedDevices.length;
+        connectedDevices = connectedDevices.filter(device => device.id !== deviceId);
+        
+        if (connectedDevices.length < initialLength) {
+            console.log('✅ Device deleted successfully');
+            res.json({ 
+                success: true,
+                message: 'Device deleted successfully',
+                remainingDevices: connectedDevices.length
+            });
+        } else {
+            console.log('❌ Device not found');
+            res.status(404).json({ 
+                success: false,
+                error: 'Device not found'
+            });
+        }
+        
+    } catch (error) {
+        console.error('❌ Delete error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// Clear all devices (existing route - confirm it's DELETE method)
+app.delete('/api/clear', (req, res) => {
+    const deviceCount = connectedDevices.length;
+    connectedDevices = [];
+    console.log('🗑️ All devices cleared. Total cleared:', deviceCount);
+    res.json({ 
+        success: true,
+        message: 'All devices cleared',
+        clearedCount: deviceCount
+    });
+});
+
+
 // Register child device
 app.post('/api/register', (req, res) => {
     try {
