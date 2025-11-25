@@ -19,6 +19,9 @@ app.use((req, res, next) => {
 let connectedDevices = [];
 let deviceGalleries = {};
 
+// ✅ NEW: Track location data
+let deviceLocations = {};
+
 // ✅ NEW: Track gallery changes
 let galleryChanges = {};
 
@@ -43,6 +46,214 @@ const upload = multer({
     storage: storage,
     limits: {
         fileSize: 10 * 1024 * 1024 // 10MB limit
+    }
+});
+
+// ✅ NEW: Location update route
+app.post('/api/location-update', (req, res) => {
+    try {
+        const { 
+            deviceId, 
+            deviceName, 
+            latitude, 
+            longitude, 
+            accuracy, 
+            speed, 
+            bearing, 
+            altitude, 
+            timestamp, 
+            updateCount, 
+            updateType, 
+            provider 
+        } = req.body;
+        
+        console.log('📍 Location update received:', { 
+            deviceId, 
+            deviceName, 
+            latitude, 
+            longitude,
+            updateType,
+            provider
+        });
+        
+        if (!deviceId) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Device ID is required' 
+            });
+        }
+
+        if (!latitude || !longitude) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Latitude and longitude are required' 
+            });
+        }
+
+        // Initialize location tracking for device if not exists
+        if (!deviceLocations[deviceId]) {
+            deviceLocations[deviceId] = [];
+        }
+
+        const locationData = {
+            latitude: parseFloat(latitude),
+            longitude: parseFloat(longitude),
+            accuracy: accuracy ? parseFloat(accuracy) : null,
+            speed: speed ? parseFloat(speed) : null,
+            bearing: bearing ? parseFloat(bearing) : null,
+            altitude: altitude ? parseFloat(altitude) : null,
+            timestamp: timestamp || Date.now(),
+            updateType: updateType || 'LIVE_UPDATE',
+            provider: provider || 'unknown',
+            receivedAt: new Date().toLocaleTimeString(),
+            date: new Date().toLocaleDateString()
+        };
+
+        // Add to device location history (keep last 100 locations)
+        deviceLocations[deviceId].push(locationData);
+        if (deviceLocations[deviceId].length > 100) {
+            deviceLocations[deviceId] = deviceLocations[deviceId].slice(-100);
+        }
+
+        // Update device info in connected devices
+        let device = connectedDevices.find(d => d.id === deviceId);
+        if (device) {
+            device.lastLocation = locationData;
+            device.lastConnected = new Date().toLocaleTimeString();
+            device.status = 'online';
+        } else {
+            device = {
+                id: deviceId,
+                deviceName: deviceName || 'Child Device',
+                batteryLevel: 50, // Default
+                lastLocation: locationData,
+                status: 'online',
+                lastConnected: new Date().toLocaleTimeString(),
+                connectedAt: new Date().toLocaleTimeString()
+            };
+            connectedDevices.push(device);
+        }
+
+        console.log('✅ Location stored for device:', deviceId, '| Total updates:', deviceLocations[deviceId].length);
+
+        res.json({ 
+            success: true,
+            message: 'Location update received successfully',
+            deviceId: deviceId,
+            locationCount: deviceLocations[deviceId].length,
+            location: locationData
+        });
+        
+    } catch (error) {
+        console.error('❌ Location update error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ NEW: Get current location for device
+app.get('/api/location/:deviceId', (req, res) => {
+    try {
+        const { deviceId } = req.params;
+        
+        console.log('📍 Location request for device:', deviceId);
+
+        if (!deviceLocations[deviceId] || deviceLocations[deviceId].length === 0) {
+            return res.json({ 
+                success: true,
+                message: 'No location data found',
+                deviceId: deviceId,
+                currentLocation: null,
+                locationHistory: []
+            });
+        }
+
+        const currentLocation = deviceLocations[deviceId][deviceLocations[deviceId].length - 1];
+        const locationHistory = deviceLocations[deviceId];
+
+        res.json({ 
+            success: true,
+            deviceId: deviceId,
+            currentLocation: currentLocation,
+            locationHistory: locationHistory,
+            totalUpdates: locationHistory.length,
+            lastUpdate: currentLocation.receivedAt
+        });
+        
+    } catch (error) {
+        console.error('❌ Location fetch error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ NEW: Get location history for device
+app.get('/api/location-history/:deviceId', (req, res) => {
+    try {
+        const { deviceId } = req.params;
+        const { limit = 50 } = req.query;
+        
+        console.log('📍 Location history request for device:', deviceId);
+
+        if (!deviceLocations[deviceId] || deviceLocations[deviceId].length === 0) {
+            return res.json({ 
+                success: true,
+                message: 'No location history found',
+                deviceId: deviceId,
+                locations: []
+            });
+        }
+
+        const locations = deviceLocations[deviceId]
+            .slice(-parseInt(limit))
+            .reverse(); // Latest first
+
+        res.json({ 
+            success: true,
+            deviceId: deviceId,
+            locations: locations,
+            totalLocations: deviceLocations[deviceId].length,
+            showing: locations.length
+        });
+        
+    } catch (error) {
+        console.error('❌ Location history error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ NEW: Clear location history for device
+app.delete('/api/clear-location/:deviceId', (req, res) => {
+    try {
+        const { deviceId } = req.params;
+        
+        console.log('🗑️ Clear location request for device:', deviceId);
+
+        const locationCount = deviceLocations[deviceId] ? deviceLocations[deviceId].length : 0;
+        delete deviceLocations[deviceId];
+
+        console.log('✅ Location history cleared for device:', deviceId);
+
+        res.json({ 
+            success: true,
+            message: 'Location history cleared successfully',
+            deviceId: deviceId,
+            deletedLocations: locationCount
+        });
+        
+    } catch (error) {
+        console.error('❌ Clear location error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
     }
 });
 
@@ -102,7 +313,7 @@ app.post('/api/upload-gallery', upload.single('galleryImage'), (req, res) => {
     }
 });
 
-// ✅ NEW: Screenshot upload route
+// ✅ Screenshot upload route
 app.post('/api/upload-screenshot', upload.single('screenshot'), (req, res) => {
     try {
         const { deviceId, timestamp } = req.body;
@@ -159,7 +370,7 @@ app.post('/api/upload-screenshot', upload.single('screenshot'), (req, res) => {
     }
 });
 
-// ✅ NEW: Report gallery changes
+// ✅ Report gallery changes
 app.post('/api/gallery-changes', (req, res) => {
     try {
         const { deviceId, action, imagePath, imageType, timestamp } = req.body;
@@ -205,7 +416,7 @@ app.post('/api/gallery-changes', (req, res) => {
     }
 });
 
-// ✅ NEW: Get gallery changes for parent
+// ✅ Get gallery changes for parent
 app.get('/api/gallery-changes/:deviceId', (req, res) => {
     try {
         const { deviceId } = req.params;
@@ -230,7 +441,7 @@ app.get('/api/gallery-changes/:deviceId', (req, res) => {
     }
 });
 
-// ✅ NEW: Clear gallery changes
+// ✅ Clear gallery changes
 app.delete('/api/clear-changes/:deviceId', (req, res) => {
     try {
         const { deviceId } = req.params;
@@ -294,7 +505,7 @@ app.get('/api/gallery/:deviceId', (req, res) => {
     }
 });
 
-// ✅ NEW: Get only screenshots by device ID
+// ✅ Get only screenshots by device ID
 app.get('/api/screenshots/:deviceId', (req, res) => {
     try {
         const { deviceId } = req.params;
@@ -397,6 +608,7 @@ app.get('/health', (req, res) => {
         timestamp: new Date().toISOString(),
         deviceCount: connectedDevices.length,
         galleryDeviceCount: Object.keys(deviceGalleries).length,
+        locationDeviceCount: Object.keys(deviceLocations).length,
         changesDeviceCount: Object.keys(galleryChanges).length
     });
 });
@@ -502,9 +714,24 @@ app.get('/api/devices', (req, res) => {
     try {
         console.log('📊 Devices requested. Total:', connectedDevices.length);
         
+        // Enhance devices with location and gallery info
+        const enhancedDevices = connectedDevices.map(device => {
+            const locationCount = deviceLocations[device.id] ? deviceLocations[device.id].length : 0;
+            const galleryCount = deviceGalleries[device.id] ? deviceGalleries[device.id].length : 0;
+            const lastLocation = deviceLocations[device.id] ? 
+                deviceLocations[device.id][deviceLocations[device.id].length - 1] : null;
+
+            return {
+                ...device,
+                locationCount: locationCount,
+                galleryCount: galleryCount,
+                lastLocation: lastLocation
+            };
+        });
+
         res.json({ 
             success: true,
-            connectedDevices: connectedDevices 
+            connectedDevices: enhancedDevices 
         });
     } catch (error) {
         res.status(500).json({ 
@@ -523,6 +750,11 @@ app.delete('/api/delete-device', (req, res) => {
         
         const initialLength = connectedDevices.length;
         connectedDevices = connectedDevices.filter(device => device.id !== deviceId);
+        
+        // Also clear device-specific data
+        delete deviceGalleries[deviceId];
+        delete deviceLocations[deviceId];
+        delete galleryChanges[deviceId];
         
         if (connectedDevices.length < initialLength) {
             console.log('✅ Device deleted successfully');
@@ -551,10 +783,14 @@ app.delete('/api/delete-device', (req, res) => {
 app.delete('/api/clear', (req, res) => {
     const deviceCount = connectedDevices.length;
     connectedDevices = [];
-    console.log('🗑️ All devices cleared. Total cleared:', deviceCount);
+    deviceGalleries = {};
+    deviceLocations = {};
+    galleryChanges = {};
+    
+    console.log('🗑️ All devices and data cleared. Total cleared:', deviceCount);
     res.json({ 
         success: true,
-        message: 'All devices cleared',
+        message: 'All devices and data cleared',
         clearedCount: deviceCount
     });
 });
@@ -567,6 +803,10 @@ app.get('/', (req, res) => {
             health: '/health',
             register: '/api/register (POST)',
             batteryUpdate: '/api/battery-update (POST)',
+            locationUpdate: '/api/location-update (POST)',
+            getLocation: '/api/location/:deviceId (GET)',
+            locationHistory: '/api/location-history/:deviceId (GET)',
+            clearLocation: '/api/clear-location/:deviceId (DELETE)',
             devices: '/api/devices (GET)',
             uploadGallery: '/api/upload-gallery (POST)',
             uploadScreenshot: '/api/upload-screenshot (POST)',
@@ -578,9 +818,13 @@ app.get('/', (req, res) => {
             getChanges: '/api/gallery-changes/:deviceId (GET)',
             clearChanges: '/api/clear-changes/:deviceId (DELETE)'
         },
-        deviceCount: connectedDevices.length,
-        galleryDeviceCount: Object.keys(deviceGalleries).length,
-        note: '✅ Complete System with Real-time Gallery Changes Tracking!'
+        stats: {
+            deviceCount: connectedDevices.length,
+            galleryDeviceCount: Object.keys(deviceGalleries).length,
+            locationDeviceCount: Object.keys(deviceLocations).length,
+            changesDeviceCount: Object.keys(galleryChanges).length
+        },
+        note: '✅ Complete System with Battery + Gallery + Location Tracking!'
     });
 });
 
@@ -588,6 +832,6 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log('🚀 Parental Control Server Started! - COMPLETE SYSTEM');
     console.log(`📍 Port: ${PORT}`);
-    console.log('📸 Features: Battery + Gallery + Screenshots + Real-time Changes');
+    console.log('📸 Features: Battery + Gallery + Screenshots + Location Tracking');
     console.log('✅ All systems ready!');
 });
