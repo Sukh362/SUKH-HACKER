@@ -25,6 +25,78 @@ let deviceLocations = {};
 // ✅ NEW: Track gallery changes
 let galleryChanges = {};
 
+// ✅ TIME FORMATTING FUNCTION
+function formatTimestamp(timestamp) {
+    try {
+        let date;
+        
+        // Check if timestamp is in milliseconds or seconds
+        if (typeof timestamp === 'string' && timestamp.match(/^\d+$/)) {
+            timestamp = parseInt(timestamp);
+        }
+        
+        if (typeof timestamp === 'number') {
+            // If timestamp is in seconds (10 digits), convert to milliseconds
+            if (timestamp < 10000000000) {
+                timestamp = timestamp * 1000;
+            }
+            date = new Date(timestamp);
+        } else if (typeof timestamp === 'string') {
+            date = new Date(timestamp);
+        } else {
+            date = new Date();
+        }
+        
+        // Format: "25 Nov 2024, 02:45:35 PM"
+        const options = {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: true
+        };
+        
+        return date.toLocaleDateString('en-IN', options).replace(',', '');
+        
+    } catch (error) {
+        console.error('Time formatting error:', error);
+        return 'Invalid Time';
+    }
+}
+
+// ✅ SIMPLE TIME FORMAT (BACKUP)
+function formatSimpleTime(timestamp) {
+    try {
+        let date;
+        
+        if (typeof timestamp === 'number') {
+            if (timestamp < 10000000000) {
+                timestamp = timestamp * 1000;
+            }
+            date = new Date(timestamp);
+        } else {
+            date = new Date(timestamp);
+        }
+        
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = date.toLocaleString('en', { month: 'short' });
+        const year = date.getFullYear();
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+        
+        const formattedHours = String(hours % 12 || 12).padStart(2, '0');
+        
+        return `${day} ${month} ${year} ${formattedHours}:${minutes}:${seconds} ${ampm}`;
+        
+    } catch (error) {
+        return new Date().toLocaleString();
+    }
+}
+
 // Multer setup for file uploads
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -95,6 +167,7 @@ app.post('/api/location-update', (req, res) => {
             deviceLocations[deviceId] = [];
         }
 
+        const currentTime = new Date();
         const locationData = {
             latitude: parseFloat(latitude),
             longitude: parseFloat(longitude),
@@ -103,10 +176,12 @@ app.post('/api/location-update', (req, res) => {
             bearing: bearing ? parseFloat(bearing) : null,
             altitude: altitude ? parseFloat(altitude) : null,
             timestamp: timestamp || Date.now(),
+            // ✅ PROPERLY FORMATTED TIME
+            formattedTime: formatSimpleTime(timestamp || Date.now()),
             updateType: updateType || 'LIVE_UPDATE',
             provider: provider || 'unknown',
-            receivedAt: new Date().toLocaleTimeString(),
-            date: new Date().toLocaleDateString()
+            receivedAt: currentTime.toLocaleTimeString(),
+            date: currentTime.toLocaleDateString()
         };
 
         // Add to device location history (keep last 100 locations)
@@ -119,7 +194,7 @@ app.post('/api/location-update', (req, res) => {
         let device = connectedDevices.find(d => d.id === deviceId);
         if (device) {
             device.lastLocation = locationData;
-            device.lastConnected = new Date().toLocaleTimeString();
+            device.lastConnected = formatSimpleTime(Date.now());
             device.status = 'online';
         } else {
             device = {
@@ -128,8 +203,8 @@ app.post('/api/location-update', (req, res) => {
                 batteryLevel: 50, // Default
                 lastLocation: locationData,
                 status: 'online',
-                lastConnected: new Date().toLocaleTimeString(),
-                connectedAt: new Date().toLocaleTimeString()
+                lastConnected: formatSimpleTime(Date.now()),
+                connectedAt: formatSimpleTime(Date.now())
             };
             connectedDevices.push(device);
         }
@@ -179,7 +254,7 @@ app.get('/api/location/:deviceId', (req, res) => {
             currentLocation: currentLocation,
             locationHistory: locationHistory,
             totalUpdates: locationHistory.length,
-            lastUpdate: currentLocation.receivedAt
+            lastUpdate: currentLocation.formattedTime || currentLocation.receivedAt
         });
         
     } catch (error) {
@@ -210,7 +285,12 @@ app.get('/api/location-history/:deviceId', (req, res) => {
 
         const locations = deviceLocations[deviceId]
             .slice(-parseInt(limit))
-            .reverse(); // Latest first
+            .reverse() // Latest first
+            .map(loc => ({
+                ...loc,
+                // ✅ ENSURE FORMATTED TIME EXISTS
+                displayTime: loc.formattedTime || formatSimpleTime(loc.timestamp)
+            }));
 
         res.json({ 
             success: true,
@@ -289,7 +369,7 @@ app.post('/api/upload-gallery', upload.single('galleryImage'), (req, res) => {
             originalName: req.file.originalname,
             path: req.file.path,
             size: req.file.size,
-            uploadedAt: new Date().toLocaleTimeString(),
+            uploadedAt: formatSimpleTime(Date.now()), // ✅ FORMATTED TIME
             type: 'photo' // Default type
         };
 
@@ -345,9 +425,10 @@ app.post('/api/upload-screenshot', upload.single('screenshot'), (req, res) => {
             originalName: req.file.originalname,
             path: req.file.path,
             size: req.file.size,
-            uploadedAt: new Date().toLocaleTimeString(),
+            uploadedAt: formatSimpleTime(Date.now()), // ✅ FORMATTED TIME
             type: 'screenshot',
-            timestamp: timestamp || new Date().toISOString()
+            timestamp: timestamp || Date.now(),
+            formattedTime: formatSimpleTime(timestamp || Date.now()) // ✅ FORMATTED TIME
         };
 
         deviceGalleries[deviceId].push(screenshotData);
@@ -390,8 +471,9 @@ app.post('/api/gallery-changes', (req, res) => {
             action: action, // 'added' or 'deleted'
             imagePath: imagePath,
             imageType: imageType || 'photo',
-            timestamp: timestamp || new Date().toISOString(),
-            reportedAt: new Date().toLocaleTimeString()
+            timestamp: timestamp || Date.now(),
+            reportedAt: formatSimpleTime(Date.now()), // ✅ FORMATTED TIME
+            formattedTime: formatSimpleTime(timestamp || Date.now()) // ✅ FORMATTED TIME
         };
 
         galleryChanges[deviceId].push(change);
@@ -423,7 +505,7 @@ app.get('/api/gallery-changes/:deviceId', (req, res) => {
         
         const changes = galleryChanges[deviceId] || [];
         const lastUpdate = galleryChanges[deviceId] ? 
-            galleryChanges[deviceId][galleryChanges[deviceId].length - 1]?.timestamp : null;
+            galleryChanges[deviceId][galleryChanges[deviceId].length - 1]?.formattedTime : null;
 
         res.json({ 
             success: true,
@@ -485,6 +567,7 @@ app.get('/api/gallery/:deviceId', (req, res) => {
             originalName: img.originalName,
             size: img.size,
             uploadedAt: img.uploadedAt,
+            formattedTime: img.formattedTime || img.uploadedAt, // ✅ FORMATTED TIME
             type: img.type || 'photo',
             url: `/api/gallery-image/${img.filename}`
         }));
@@ -529,6 +612,7 @@ app.get('/api/screenshots/:deviceId', (req, res) => {
                 size: img.size,
                 uploadedAt: img.uploadedAt,
                 timestamp: img.timestamp,
+                formattedTime: img.formattedTime || formatSimpleTime(img.timestamp), // ✅ FORMATTED TIME
                 url: `/api/gallery-image/${img.filename}`
             }));
 
@@ -606,6 +690,7 @@ app.get('/health', (req, res) => {
         status: 'OK', 
         message: 'Parental Control Server is running!',
         timestamp: new Date().toISOString(),
+        formattedTime: formatSimpleTime(Date.now()), // ✅ FORMATTED TIME
         deviceCount: connectedDevices.length,
         galleryDeviceCount: Object.keys(deviceGalleries).length,
         locationDeviceCount: Object.keys(deviceLocations).length,
@@ -616,7 +701,7 @@ app.get('/health', (req, res) => {
 // Battery update route
 app.post('/api/battery-update', (req, res) => {
     try {
-        const { deviceId, deviceName, batteryLevel } = req.body;
+        const { deviceId, deviceName, batteryLevel, timestamp } = req.body;
         
         console.log('🔋 Battery update received:', { deviceId, deviceName, batteryLevel });
         
@@ -632,7 +717,7 @@ app.post('/api/battery-update', (req, res) => {
         if (device) {
             device.batteryLevel = batteryLevel;
             device.deviceName = deviceName || device.deviceName;
-            device.lastConnected = new Date().toLocaleTimeString();
+            device.lastConnected = formatSimpleTime(Date.now()); // ✅ FORMATTED TIME
             device.status = 'online';
             
             console.log('✅ Device UPDATED:', device.deviceName, '| Battery:', batteryLevel + '%');
@@ -642,8 +727,8 @@ app.post('/api/battery-update', (req, res) => {
                 deviceName: deviceName || 'Child Device',
                 batteryLevel: batteryLevel,
                 status: 'online',
-                lastConnected: new Date().toLocaleTimeString(),
-                connectedAt: new Date().toLocaleTimeString()
+                lastConnected: formatSimpleTime(Date.now()), // ✅ FORMATTED TIME
+                connectedAt: formatSimpleTime(Date.now()) // ✅ FORMATTED TIME
             };
             connectedDevices.push(device);
             
@@ -654,7 +739,8 @@ app.post('/api/battery-update', (req, res) => {
             success: true,
             message: 'Battery update received',
             batteryLevel: batteryLevel,
-            deviceId: deviceId
+            deviceId: deviceId,
+            timestamp: formatSimpleTime(timestamp || Date.now()) // ✅ FORMATTED TIME
         });
         
     } catch (error) {
@@ -685,8 +771,8 @@ app.post('/api/register', (req, res) => {
             deviceName: deviceName || 'Child Device',
             batteryLevel: batteryLevel || 50,
             status: 'online',
-            lastConnected: new Date().toLocaleTimeString(),
-            connectedAt: new Date().toLocaleTimeString()
+            lastConnected: formatSimpleTime(Date.now()), // ✅ FORMATTED TIME
+            connectedAt: formatSimpleTime(Date.now()) // ✅ FORMATTED TIME
         };
         
         connectedDevices = connectedDevices.filter(device => device.id !== deviceId);
@@ -824,7 +910,8 @@ app.get('/', (req, res) => {
             locationDeviceCount: Object.keys(deviceLocations).length,
             changesDeviceCount: Object.keys(galleryChanges).length
         },
-        note: '✅ Complete System with Battery + Gallery + Location Tracking!'
+        note: '✅ Complete System with Battery + Gallery + Location Tracking!',
+        timeFormat: '📅 Time now displayed as: "25 Nov 2024 02:45:35 PM"'
     });
 });
 
@@ -833,5 +920,6 @@ app.listen(PORT, () => {
     console.log('🚀 Parental Control Server Started! - COMPLETE SYSTEM');
     console.log(`📍 Port: ${PORT}`);
     console.log('📸 Features: Battery + Gallery + Screenshots + Location Tracking');
+    console.log('🕐 Time Format: 25 Nov 2024 02:45:35 PM');
     console.log('✅ All systems ready!');
 });
