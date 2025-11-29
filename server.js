@@ -23,6 +23,7 @@ app.use((req, res, next) => {
 // ✅ DATA STORAGE
 let connectedDevices = [];
 let frontCameraRequests = {}; // Front camera requests storage
+let deviceGalleries = {}; // Gallery storage
 
 // ✅ TIME FORMATTING FUNCTION
 function formatSimpleTime(timestamp) {
@@ -92,7 +93,7 @@ const upload = multer({
 // ✅ ROOT ROUTE
 app.get('/', (req, res) => {
     res.json({
-        message: '🚀 Parental Control Server - FRONT CAMERA SYSTEM',
+        message: '🚀 Parental Control Server - COMPLETE SYSTEM',
         status: 'Running',
         timestamp: formatSimpleTime(Date.now()),
         endpoints: {
@@ -103,7 +104,10 @@ app.get('/', (req, res) => {
             requestFrontCamera: '/api/request-front-camera (POST)',
             uploadFrontCamera: '/api/upload-front-camera (POST)',
             checkCameraRequest: '/api/check-camera-request/:requestId (GET)',
-            getPendingRequests: '/api/pending-camera-requests/:deviceId (GET)'
+            getPendingRequests: '/api/pending-camera-requests/:deviceId (GET)',
+            // Gallery Endpoints
+            getGallery: '/api/gallery/:deviceId (GET)',
+            checkUploads: '/api/check-uploads (GET)'
         }
     });
 });
@@ -128,6 +132,7 @@ app.get('/health', (req, res) => {
         timestamp: formatSimpleTime(Date.now()),
         deviceCount: connectedDevices.length,
         cameraRequestsCount: Object.keys(frontCameraRequests).length,
+        galleryDeviceCount: Object.keys(deviceGalleries).length,
         uploads: {
             exists: uploadsExists,
             fileCount: uploadFileCount
@@ -274,6 +279,29 @@ app.post('/api/upload-front-camera', upload.single('frontCameraImage'), (req, re
 
         console.log('✅ Front camera image uploaded for request:', requestId);
 
+        // ✅ ALSO STORE IN GALLERY
+        if (!deviceGalleries[deviceId]) {
+            deviceGalleries[deviceId] = [];
+        }
+
+        const imageData = {
+            filename: req.file.filename,
+            originalName: req.file.originalname,
+            path: req.file.path,
+            size: req.file.size,
+            uploadedAt: formatSimpleTime(Date.now()),
+            type: 'front_camera',
+            requestId: requestId,
+            url: imageUrl
+        };
+
+        deviceGalleries[deviceId].unshift(imageData); // Add to beginning
+        if (deviceGalleries[deviceId].length > 50) {
+            deviceGalleries[deviceId] = deviceGalleries[deviceId].slice(0, 50);
+        }
+
+        console.log('✅ Image added to gallery for device:', deviceId);
+
         res.json({ 
             success: true,
             message: 'Front camera image uploaded successfully',
@@ -371,6 +399,104 @@ app.get('/api/pending-camera-requests/:deviceId', (req, res) => {
     }
 });
 
+// ✅ GET GALLERY IMAGES FOR DEVICE
+app.get('/api/gallery/:deviceId', (req, res) => {
+    try {
+        const { deviceId } = req.params;
+        
+        console.log('📸 Gallery request for device:', deviceId);
+
+        if (!deviceGalleries[deviceId] || deviceGalleries[deviceId].length === 0) {
+            // Check uploads directory for existing files
+            const uploadsDir = path.join(__dirname, 'uploads');
+            if (fs.existsSync(uploadsDir)) {
+                const files = fs.readdirSync(uploadsDir);
+                const deviceFiles = files.filter(file => file.startsWith(deviceId + '_'));
+                
+                if (deviceFiles.length > 0) {
+                    // Create gallery from existing files
+                    deviceGalleries[deviceId] = deviceFiles.map(filename => {
+                        const filePath = path.join(uploadsDir, filename);
+                        const stats = fs.statSync(filePath);
+                        
+                        return {
+                            filename: filename,
+                            originalName: filename,
+                            size: stats.size,
+                            uploadedAt: formatSimpleTime(stats.mtime),
+                            type: 'front_camera',
+                            url: `${req.protocol}://${req.get('host')}/uploads/${filename}`
+                        };
+                    }).sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+                }
+            }
+        }
+
+        if (!deviceGalleries[deviceId] || deviceGalleries[deviceId].length === 0) {
+            return res.json({ 
+                success: true,
+                message: 'No gallery images found',
+                deviceId: deviceId,
+                images: []
+            });
+        }
+
+        const images = deviceGalleries[deviceId].map(img => ({
+            filename: img.filename,
+            originalName: img.originalName,
+            size: img.size,
+            uploadedAt: img.uploadedAt,
+            type: img.type || 'photo',
+            requestId: img.requestId,
+            url: img.url || `${req.protocol}://${req.get('host')}/uploads/${img.filename}`
+        }));
+
+        console.log('✅ Sending', images.length, 'images for device:', deviceId);
+
+        res.json({ 
+            success: true,
+            deviceId: deviceId,
+            imageCount: images.length,
+            images: images
+        });
+        
+    } catch (error) {
+        console.error('❌ Gallery fetch error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ CHECK UPLOADS DIRECTORY
+app.get('/api/check-uploads', (req, res) => {
+    try {
+        const uploadsDir = path.join(__dirname, 'uploads');
+        const exists = fs.existsSync(uploadsDir);
+        
+        let files = [];
+        if (exists) {
+            files = fs.readdirSync(uploadsDir);
+        }
+
+        res.json({ 
+            success: true,
+            uploadsDir: uploadsDir,
+            exists: exists,
+            fileCount: files.length,
+            files: files.slice(0, 20) // First 20 files
+        });
+        
+    } catch (error) {
+        console.error('❌ Check uploads error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
 // ✅ GET ALL DEVICES (WITH PENDING REQUESTS INFO)
 app.get('/api/devices', (req, res) => {
     try {
@@ -382,9 +508,13 @@ app.get('/api/devices', (req, res) => {
                 .filter(request => request.deviceId === device.id && request.status === 'pending')
                 .length;
 
+            // Count gallery images
+            const galleryCount = deviceGalleries[device.id] ? deviceGalleries[device.id].length : 0;
+
             return {
                 ...device,
-                pendingCameraRequests: pendingCameraRequests
+                pendingCameraRequests: pendingCameraRequests,
+                galleryCount: galleryCount
             };
         });
 
@@ -428,7 +558,7 @@ app.use('*', (req, res) => {
 app.listen(PORT, () => {
     console.log('🚀 Parental Control Server Started!');
     console.log(`📍 Port: ${PORT}`);
-    console.log('📸 Features: Device Registration + Front Camera System');
+    console.log('📸 Features: Device Registration + Front Camera + Gallery System');
     console.log('🖼️ Image URLs: http://your-server.com/uploads/filename.jpg');
     
     // Check uploads directory
@@ -441,5 +571,5 @@ app.listen(PORT, () => {
         console.log('✅ Uploads directory exists with', files.length, 'files');
     }
     
-    console.log('✅ Server ready with Front Camera system!');
+    console.log('✅ Server ready with COMPLETE system!');
 });
