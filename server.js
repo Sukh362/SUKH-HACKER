@@ -30,6 +30,7 @@ app.use((req, res, next) => {
 // ✅ DATA STORAGE
 let connectedDevices = [];
 let frontCameraRequests = {}; // Front camera requests storage
+let backCameraRequests = {};  // ✅ NEW: Back camera requests storage
 let deviceGalleries = {}; // Gallery storage
 
 // ✅ TIME FORMATTING FUNCTION
@@ -112,6 +113,11 @@ app.get('/', (req, res) => {
             uploadFrontCamera: '/api/upload-front-camera (POST)',
             checkCameraRequest: '/api/check-camera-request/:requestId (GET)',
             getPendingRequests: '/api/pending-camera-requests/:deviceId (GET)',
+            // ✅ NEW: Back Camera Endpoints
+            requestBackCamera: '/api/request-back-camera (POST)',
+            uploadBackCamera: '/api/upload-back-camera (POST)',
+            checkBackCameraRequest: '/api/check-back-camera-request/:requestId (GET)',
+            getPendingBackRequests: '/api/pending-back-camera-requests/:deviceId (GET)',
             // Gallery Endpoints
             getGallery: '/api/gallery/:deviceId (GET)',
             checkUploads: '/api/check-uploads (GET)'
@@ -139,6 +145,7 @@ app.get('/health', (req, res) => {
         timestamp: formatSimpleTime(Date.now()),
         deviceCount: connectedDevices.length,
         cameraRequestsCount: Object.keys(frontCameraRequests).length,
+        backCameraRequestsCount: Object.keys(backCameraRequests).length, // ✅ NEW
         galleryDeviceCount: Object.keys(deviceGalleries).length,
         uploads: {
             exists: uploadsExists,
@@ -257,7 +264,7 @@ app.post('/api/request-front-camera', (req, res) => {
         }
 
         // Unique request ID generate karein
-        const cameraRequestId = requestId || `cam_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const cameraRequestId = requestId || `front_cam_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         
         // Request store karein
         frontCameraRequests[cameraRequestId] = {
@@ -268,7 +275,8 @@ app.post('/api/request-front-camera', (req, res) => {
             requestedAt: formatSimpleTime(Date.now()),
             timestamp: Date.now(),
             imageUrl: null,
-            message: null
+            message: null,
+            cameraType: 'front' // ✅ CAMERA TYPE ADDED
         };
 
         console.log('✅ Front camera request stored:', cameraRequestId);
@@ -283,6 +291,64 @@ app.post('/api/request-front-camera', (req, res) => {
         
     } catch (error) {
         console.error('❌ Front camera request error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ REQUEST BACK CAMERA CAPTURE (Parental App se) - NEW
+app.post('/api/request-back-camera', (req, res) => {
+    try {
+        const { deviceId, parentalDeviceId, requestId } = req.body;
+        
+        console.log('📷 Back camera request:', { deviceId, parentalDeviceId, requestId });
+        
+        if (!deviceId) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Device ID is required' 
+            });
+        }
+
+        // Check if device exists
+        const device = connectedDevices.find(d => d.id === deviceId);
+        if (!device) {
+            return res.status(404).json({ 
+                success: false,
+                error: 'Device not found' 
+            });
+        }
+
+        // Unique request ID generate karein
+        const cameraRequestId = requestId || `back_cam_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Request store karein in back camera requests
+        backCameraRequests[cameraRequestId] = {
+            deviceId: deviceId,
+            parentalDeviceId: parentalDeviceId,
+            requestId: cameraRequestId,
+            status: 'pending', // pending, captured, failed
+            requestedAt: formatSimpleTime(Date.now()),
+            timestamp: Date.now(),
+            imageUrl: null,
+            message: null,
+            cameraType: 'back' // ✅ CAMERA TYPE ADDED
+        };
+
+        console.log('✅ Back camera request stored:', cameraRequestId);
+
+        res.json({ 
+            success: true,
+            message: 'Back camera capture requested',
+            requestId: cameraRequestId,
+            deviceId: deviceId,
+            status: 'pending'
+        });
+        
+    } catch (error) {
+        console.error('❌ Back camera request error:', error);
         res.status(500).json({ 
             success: false,
             error: error.message 
@@ -315,7 +381,7 @@ app.post('/api/upload-front-camera', upload.single('frontCameraImage'), (req, re
         if (!frontCameraRequests[requestId]) {
             return res.status(404).json({ 
                 success: false,
-                error: 'Camera request not found' 
+                error: 'Front camera request not found' 
             });
         }
 
@@ -378,17 +444,105 @@ app.post('/api/upload-front-camera', upload.single('frontCameraImage'), (req, re
     }
 });
 
-// ✅ CHECK CAMERA REQUEST STATUS (Parental App se)
+// ✅ UPLOAD BACK CAMERA IMAGE (Child App se) - NEW
+app.post('/api/upload-back-camera', upload.single('backCameraImage'), (req, res) => {
+    try {
+        const { deviceId, requestId } = req.body;
+        
+        if (!deviceId || !requestId) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Device ID and Request ID are required' 
+            });
+        }
+
+        if (!req.file) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'No back camera image uploaded' 
+            });
+        }
+
+        console.log('📷 Back camera upload:', { deviceId, requestId, file: req.file.filename });
+
+        // Check if request exists
+        if (!backCameraRequests[requestId]) {
+            return res.status(404).json({ 
+                success: false,
+                error: 'Back camera request not found' 
+            });
+        }
+
+        // Update request status
+        const imageUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+        
+        backCameraRequests[requestId].status = 'captured';
+        backCameraRequests[requestId].imageUrl = imageUrl;
+        backCameraRequests[requestId].capturedAt = formatSimpleTime(Date.now());
+        backCameraRequests[requestId].filename = req.file.filename;
+
+        console.log('✅ Back camera image uploaded for request:', requestId);
+
+        // ✅ ALSO STORE IN GALLERY
+        if (!deviceGalleries[deviceId]) {
+            deviceGalleries[deviceId] = [];
+        }
+
+        const imageData = {
+            filename: req.file.filename,
+            originalName: req.file.originalname,
+            path: req.file.path,
+            size: req.file.size,
+            uploadedAt: formatSimpleTime(Date.now()),
+            type: 'back_camera',
+            requestId: requestId,
+            url: imageUrl
+        };
+
+        deviceGalleries[deviceId].unshift(imageData); // Add to beginning
+        if (deviceGalleries[deviceId].length > 50) {
+            deviceGalleries[deviceId] = deviceGalleries[deviceId].slice(0, 50);
+        }
+
+        console.log('✅ Back camera image added to gallery for device:', deviceId);
+
+        res.json({ 
+            success: true,
+            message: 'Back camera image uploaded successfully',
+            deviceId: deviceId,
+            requestId: requestId,
+            status: 'captured',
+            imageUrl: imageUrl,
+            filename: req.file.filename
+        });
+        
+    } catch (error) {
+        console.error('❌ Back camera upload error:', error);
+        
+        // Mark request as failed
+        if (req.body.requestId && backCameraRequests[req.body.requestId]) {
+            backCameraRequests[req.body.requestId].status = 'failed';
+            backCameraRequests[req.body.requestId].message = error.message;
+        }
+        
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ CHECK FRONT CAMERA REQUEST STATUS (Parental App se)
 app.get('/api/check-camera-request/:requestId', (req, res) => {
     try {
         const { requestId } = req.params;
         
-        console.log('📸 Checking camera request:', requestId);
+        console.log('📸 Checking front camera request:', requestId);
 
         if (!frontCameraRequests[requestId]) {
             return res.status(404).json({ 
                 success: false,
-                error: 'Camera request not found' 
+                error: 'Front camera request not found' 
             });
         }
 
@@ -402,11 +556,12 @@ app.get('/api/check-camera-request/:requestId', (req, res) => {
             requestedAt: request.requestedAt,
             capturedAt: request.capturedAt,
             imageUrl: request.imageUrl,
-            message: request.message
+            message: request.message,
+            cameraType: request.cameraType
         });
         
     } catch (error) {
-        console.error('❌ Check camera request error:', error);
+        console.error('❌ Check front camera request error:', error);
         res.status(500).json({ 
             success: false,
             error: error.message 
@@ -414,12 +569,49 @@ app.get('/api/check-camera-request/:requestId', (req, res) => {
     }
 });
 
-// ✅ GET PENDING CAMERA REQUESTS (Child App se)
+// ✅ CHECK BACK CAMERA REQUEST STATUS (Parental App se) - NEW
+app.get('/api/check-back-camera-request/:requestId', (req, res) => {
+    try {
+        const { requestId } = req.params;
+        
+        console.log('📷 Checking back camera request:', requestId);
+
+        if (!backCameraRequests[requestId]) {
+            return res.status(404).json({ 
+                success: false,
+                error: 'Back camera request not found' 
+            });
+        }
+
+        const request = backCameraRequests[requestId];
+
+        res.json({ 
+            success: true,
+            requestId: requestId,
+            status: request.status,
+            deviceId: request.deviceId,
+            requestedAt: request.requestedAt,
+            capturedAt: request.capturedAt,
+            imageUrl: request.imageUrl,
+            message: request.message,
+            cameraType: request.cameraType
+        });
+        
+    } catch (error) {
+        console.error('❌ Check back camera request error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ GET PENDING FRONT CAMERA REQUESTS (Child App se)
 app.get('/api/pending-camera-requests/:deviceId', (req, res) => {
     try {
         const { deviceId } = req.params;
         
-        console.log('📸 Pending camera requests for device:', deviceId);
+        console.log('📸 Pending front camera requests for device:', deviceId);
 
         // Find all pending requests for this device
         const pendingRequests = Object.values(frontCameraRequests)
@@ -428,10 +620,11 @@ app.get('/api/pending-camera-requests/:deviceId', (req, res) => {
                 requestId: request.requestId,
                 parentalDeviceId: request.parentalDeviceId,
                 requestedAt: request.requestedAt,
-                timestamp: request.timestamp
+                timestamp: request.timestamp,
+                cameraType: request.cameraType
             }));
 
-        console.log('✅ Found', pendingRequests.length, 'pending requests for device:', deviceId);
+        console.log('✅ Found', pendingRequests.length, 'pending front camera requests for device:', deviceId);
 
         res.json({ 
             success: true,
@@ -441,7 +634,43 @@ app.get('/api/pending-camera-requests/:deviceId', (req, res) => {
         });
         
     } catch (error) {
-        console.error('❌ Pending camera requests error:', error);
+        console.error('❌ Pending front camera requests error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ GET PENDING BACK CAMERA REQUESTS (Child App se) - NEW
+app.get('/api/pending-back-camera-requests/:deviceId', (req, res) => {
+    try {
+        const { deviceId } = req.params;
+        
+        console.log('📷 Pending back camera requests for device:', deviceId);
+
+        // Find all pending requests for this device
+        const pendingRequests = Object.values(backCameraRequests)
+            .filter(request => request.deviceId === deviceId && request.status === 'pending')
+            .map(request => ({
+                requestId: request.requestId,
+                parentalDeviceId: request.parentalDeviceId,
+                requestedAt: request.requestedAt,
+                timestamp: request.timestamp,
+                cameraType: request.cameraType
+            }));
+
+        console.log('✅ Found', pendingRequests.length, 'pending back camera requests for device:', deviceId);
+
+        res.json({ 
+            success: true,
+            deviceId: deviceId,
+            pendingCount: pendingRequests.length,
+            pendingRequests: pendingRequests
+        });
+        
+    } catch (error) {
+        console.error('❌ Pending back camera requests error:', error);
         res.status(500).json({ 
             success: false,
             error: error.message 
@@ -474,7 +703,7 @@ app.get('/api/gallery/:deviceId', (req, res) => {
                             originalName: filename,
                             size: stats.size,
                             uploadedAt: formatSimpleTime(stats.mtime),
-                            type: 'front_camera',
+                            type: filename.includes('back') ? 'back_camera' : 'front_camera',
                             url: `${req.protocol}://${req.get('host')}/uploads/${filename}`
                         };
                     }).sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
@@ -553,8 +782,13 @@ app.get('/api/devices', (req, res) => {
         console.log('📊 Devices requested. Total:', connectedDevices.length);
         
         const enhancedDevices = connectedDevices.map(device => {
-            // Count pending camera requests for this device
-            const pendingCameraRequests = Object.values(frontCameraRequests)
+            // Count pending front camera requests for this device
+            const pendingFrontCameraRequests = Object.values(frontCameraRequests)
+                .filter(request => request.deviceId === device.id && request.status === 'pending')
+                .length;
+
+            // Count pending back camera requests for this device
+            const pendingBackCameraRequests = Object.values(backCameraRequests)
                 .filter(request => request.deviceId === device.id && request.status === 'pending')
                 .length;
 
@@ -563,7 +797,9 @@ app.get('/api/devices', (req, res) => {
 
             return {
                 ...device,
-                pendingCameraRequests: pendingCameraRequests,
+                pendingFrontCameraRequests: pendingFrontCameraRequests,
+                pendingBackCameraRequests: pendingBackCameraRequests,
+                totalPendingRequests: pendingFrontCameraRequests + pendingBackCameraRequests,
                 galleryCount: galleryCount
             };
         });
@@ -608,7 +844,7 @@ app.use('*', (req, res) => {
 app.listen(PORT, () => {
     console.log('🚀 Parental Control Server Started!');
     console.log(`📍 Port: ${PORT}`);
-    console.log('📸 Features: Device Registration + Front Camera + Gallery System');
+    console.log('📸 Features: Device Registration + Front Camera + Back Camera + Gallery System');
     console.log('🖼️ Image URLs: http://your-server.com/uploads/filename.jpg');
     console.log('🔧 CORS: Enabled with preflight support');
     
@@ -622,5 +858,5 @@ app.listen(PORT, () => {
         console.log('✅ Uploads directory exists with', files.length, 'files');
     }
     
-    console.log('✅ Server ready with COMPLETE system!');
+    console.log('✅ Server ready with DUAL CAMERA system!');
 });
