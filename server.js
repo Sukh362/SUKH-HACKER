@@ -12,11 +12,18 @@ app.use(express.urlencoded({ extended: true }));
 // ✅ IMPORTANT: Static files serve karne ke liye
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ✅ CORS middleware
+// ✅ IMPROVED CORS middleware - FIXED
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, deviceId, Content-Type');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+    
+    // Handle preflight requests
+    if (req.method === 'OPTIONS') {
+        return res.status(200).json({
+            body: "OK"
+        });
+    }
     next();
 });
 
@@ -140,14 +147,21 @@ app.get('/health', (req, res) => {
     });
 });
 
-// ✅ DEVICE REGISTRATION
+// ✅ DEVICE REGISTRATION - IMPROVED LOGGING
 app.post('/api/register', (req, res) => {
     try {
         const { deviceId, deviceName, batteryLevel } = req.body;
         
-        console.log('📱 Device registration:', { deviceId, deviceName, batteryLevel });
+        console.log('📱 Device registration REQUEST:', { 
+            deviceId, 
+            deviceName, 
+            batteryLevel,
+            headers: req.headers,
+            body: req.body
+        });
         
         if (!deviceId) {
+            console.log('❌ Registration failed: Device ID missing');
             return res.status(400).json({ 
                 success: false,
                 error: 'Device ID is required' 
@@ -163,19 +177,55 @@ app.post('/api/register', (req, res) => {
             connectedAt: formatSimpleTime(Date.now())
         };
         
+        // Remove if exists and add new
         connectedDevices = connectedDevices.filter(device => device.id !== deviceId);
         connectedDevices.push(newDevice);
         
-        console.log('✅ Device registered:', deviceId);
+        console.log('✅ Device registered successfully:', deviceId);
+        console.log('📊 Total devices now:', connectedDevices.length);
         
         res.json({ 
             success: true,
             message: 'Device registered successfully',
-            device: newDevice
+            device: newDevice,
+            totalDevices: connectedDevices.length
         });
         
     } catch (error) {
         console.error('❌ Registration error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
+    }
+});
+
+// ✅ TEST REGISTRATION ENDPOINT
+app.get('/api/test-register', (req, res) => {
+    try {
+        const testDeviceId = 'test_device_' + Date.now();
+        const newDevice = {
+            id: testDeviceId,
+            deviceName: 'Test Device',
+            batteryLevel: 75,
+            status: 'online',
+            lastConnected: formatSimpleTime(Date.now()),
+            connectedAt: formatSimpleTime(Date.now())
+        };
+        
+        connectedDevices.push(newDevice);
+        
+        console.log('✅ Test device registered:', testDeviceId);
+        
+        res.json({ 
+            success: true,
+            message: 'Test registration successful',
+            device: newDevice,
+            totalDevices: connectedDevices.length
+        });
+        
+    } catch (error) {
+        console.error('❌ Test registration error:', error);
         res.status(500).json({ 
             success: false,
             error: error.message 
@@ -560,6 +610,7 @@ app.listen(PORT, () => {
     console.log(`📍 Port: ${PORT}`);
     console.log('📸 Features: Device Registration + Front Camera + Gallery System');
     console.log('🖼️ Image URLs: http://your-server.com/uploads/filename.jpg');
+    console.log('🔧 CORS: Enabled with preflight support');
     
     // Check uploads directory
     const uploadsDir = path.join(__dirname, 'uploads');
